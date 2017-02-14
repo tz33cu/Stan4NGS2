@@ -1,0 +1,350 @@
+---
+title: 'Stan notebook: a prototype'
+author: "Tian Zheng, Department of Statistics, Columbia University"
+date: "NGS2 Kickoff Meeting. October 27, 2016"
+output:
+  ioslides_presentation:
+    widescreen: yes
+  beamer_presentation: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## Reproducing other people's data analysis is HARD.
+
+```{r, out.width = "600px"}
+knitr::include_graphics("images/picture1.png")
+```
+
+## Stan notebook
+
+- Transparent modeling
+- Reproducible computing
+- Efficient Bayesian inference
+- Enabled simulation-based model checking
+
+## Simulation - hierarchical Bayesian regression model
+
+**Demo**: This is an R Markdown presentation with `RStan` modeling, adapted from an `ipynb` R notebook using Stan created by Milad Kharratzadeh.
+
+<http://bit.ly/StanNbDemo1>
+
+Required R packages are explicitly listed with installation codes: 
+```{r, message=FALSE}
+#library(devtools)
+#devtools::install_github("hadley/scales")
+#devtools::install_github("hadley/ggplot2")
+#devtools::install_github("stan-dev/bayesplot", build_vignettes = FALSE) 
+#devtools::install_github("stan-dev/rstan", build_vignettes = FALSE) 
+```
+
+## A meta-analysis of experimental studies of an education intervention
+
+Consider a model with 
+
+- varying slopes
+- varying intercepts
+- individual-level predictors
+- group-level predictors. 
+
+Meta-analysis of experimental studies of an education intervention (e.g., a new coaching program). 
+
+## Simulation setup
+
+- A total of $n$ students
+- In $J$ different schools
+- For each student
+    - $y_i$, a measure of improvment;
+    - $P$ predictors, ${\bf x}_i$, (1 for intercept, socio-economic status, number of study hours, pre-treatment test score, parent's education level, etc.) 
+  
+## Data generating model
+
+- A within-group model of how the individual-level predictors affect the measure of improvement:
+$$y_i = {\bf x}_n^T\boldsymbol{\beta}_{g[i]}+\varepsilon_i,\ \varepsilon_i \sim   \text{N} (0, \sigma^2), \qquad i=1, \ldots, n,$$
+where $g[i]\in \{1, \ldots, J\}$ is the group (i.e., school) of the $i$th student. 
+
+- A multi-variate Normal distribution for the varying coefficients:
+$$\boldsymbol{\beta}_j={\bf u}_j^T \boldsymbol{\gamma}+\boldsymbol{\eta}_j, \ , \boldsymbol{\eta}_j\sim\text{MVN}({\bf 0}, \boldsymbol{\Sigma}), \qquad j=1, \ldots, J,$$
+where ${\bf u}_j$ are the school-level predictors (e.g., size of classrooms or historical performance) , and $\boldsymbol{\gamma}$ is the group-level coefficient matrix.
+
+## Hyper priors
+
+- A weakly informative prior, $\text{N}(0,5)$, on the elements of $\boldsymbol{\gamma}$.
+- The covariance matrix is decomposed into a scale and a correlation matrix as follows:
+$$\boldsymbol{\Sigma} = \text{diag}(\boldsymbol{\tau}) \ \boldsymbol{\Omega} \  \text{diag}(\boldsymbol{\tau}), $$
+where ${
+\bf \tau}$ are scale coefficients and ${
+\bf \Omega}$ is the correlation matrix.
+    - ${\bf \tau}_i \sim \text{Cauchy} (0, 2.5),\ {
+\bf \tau}_i>0,\ \text{weakly informative prior,}$
+    - $\boldsymbol{\Omega} \sim \text{LKJcorr}(2),$ 
+    - The LKJ prior is for parameter $\nu$ is proportional to $|\text{det}({\bf \Omega})|^{\nu-1}$.
+    
+## Generating Simulated Data
+
+Specify stan codes for generating data: `generatedata.stan`.
+
+```{r, eval=F, echo=T}
+file_path <- "generateData.stan"
+lines <- readLines(file_path, encoding="ASCII")
+for (n in 1:length(lines)) cat(lines[n],'\n')
+```
+
+```
+data { 
+  int<lower=1> J;                     // Number of groups 
+  int<lower=1> Q;                     // Number of group-level predictors 
+  int<lower=1> N;                     // Number of individuals 
+  int<lower=1> P;                     // Number of individual-level predictors 
+  int<lower=1, upper=J> gg[N];        // Grouping 
+} 
+```
+ 
+## Generating Simulated Data
+
+```
+parameters { 
+} 
+ 
+model { 
+} 
+```
+
+## Generating Simulated Data
+
+```
+generated quantities { 
+  matrix<lower=0, upper=2>[N, P] X;   // Individual predictors 
+  matrix<lower=0, upper=5>[J, Q] U;   // Group predictors 
+  real<lower=0> sigma;                // Observation error 
+  matrix[Q, P] gamma;                 // Group-level coefficients 
+  matrix[P, J] Z;                     // Z will be used later to build Beta 
+  vector<lower=0>[P] tau;             // Prior scale 
+  cholesky_factor_corr[P] Omega_chol; // Cholesky decomposition of Omega 
+  matrix[J, P] Beta;                  // Individual-level coefficients 
+  vector[N] Y;                        // Responses 
+```
+
+## Generating Simulated Data
+
+```
+  sigma = 10;  
+  for (p in 1:P) { 
+    tau[p] = fabs(cauchy_rng(0,2.5)); 
+    for (j in 1:J) 
+      Z[p,j] = normal_rng(0, 1); 
+    for (n in 1:N) 
+      X[n,p] = uniform_rng(0,2); 
+    for (q in 1:Q) 
+      gamma[q,p] = normal_rng(0, 5); 
+  } 
+
+```
+
+## Generating Simulated Data
+
+```
+  for (j in 1:J) { 
+    for (q in 2:Q) 
+      U[j,q] = uniform_rng(0,5); 
+  } 
+   
+  X[:,1] = rep_vector(1,N); // Intercept 
+  U[:,1] = rep_vector(1,J); // Intercept 
+  Omega_chol = lkj_corr_cholesky_rng(P, 2); 
+  Beta = U * gamma + (diag_pre_multiply(tau, Omega_chol) * Z)'; 
+   
+  for (n in 1:N) 
+    Y[n] = normal_rng(dot_product(Beta[gg[n]] , X[n]),sigma); 
+} 
+```
+## Generating Simulated Data
+
+```{r, message=F}
+library("rstan")
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores()-2)
+J <- 20                  # Number of groups
+Q <- 4                   # Number of group-level predictors
+N <- 1000                # Number of individuals
+P <- 4                   # Number of individual-level predictors
+gg <- rep(1:J, each=N/J) # Group memberships
+fit <- stan("generateData.stan", data=c("J","Q","N","P","gg"), algorithm = "Fixed_param", 
+            iter = 1, chains = 1, seed=1234)
+mfit <- extract(fit)
+X <- mfit$X[1,,]  # Individual predictors
+U <- mfit$U[1,,]  # Group predictors
+Y <- mfit$Y[1,]  # Observed Responses
+```
+
+
+## Generated data
+
+```{r data}
+boxplot(matrix(Y,nrow=50),xlab="School", ylab=expression(y[n]))
+```
+
+## Generated data
+
+```{r}
+xa <- rep(round(U[,4],2),each=N/J)
+boxplot(Y~xa, xlab="A given school-level predictor", ylab=expression(y[n]))
+```
+
+## Fitting the model
+
+Set up `HierarchicalRegression.stan`.
+
+```{r,eval=F, echo=T}
+file_path <- "HierarchicalRegression.stan"
+lines <- readLines(file_path, encoding="ASCII")
+for (n in 1:length(lines)) cat(lines[n],'\n')
+```
+
+## Fitting the model
+
+```
+data { 
+  int<lower=1> J; // Number of groups 
+  int<lower=1> Q; // Number of group-level predictors 
+  int<lower=1> N; // Number of individuals 
+  int<lower=1> P; // Number of individual-level predictors 
+  int<lower=1, upper=J> gg[N]; // Grouping 
+  matrix[N, P] X; // Individual predictors 
+  matrix[J, Q] U; // Group predictors 
+  vector[N] Y;    // Responses 
+} 
+```
+## Fitting the model
+
+```
+parameters { 
+  real<lower=0> sigma;    // Observation error 
+  matrix[Q, P] gamma;     // Group-level coefficients 
+  matrix[P, J] Z;         // Z will be used later to build Beta 
+  vector<lower=0>[P] tau; // Prior scale 
+  cholesky_factor_corr[P] Omega_chol; // Cholesky decomposition of Omega 
+} 
+```
+
+## Fitting the model
+
+```
+transformed parameters { 
+  matrix[J, P] Beta;  // Individual-level coefficients 
+  Beta = U * gamma + (diag_pre_multiply(tau, Omega_chol) * Z)'; 
+} 
+ 
+model { 
+  tau ~ cauchy(0,2.5); 
+  to_vector(Z) ~ normal(0, 1); 
+  Omega_chol ~ lkj_corr_cholesky(2); 
+  to_vector(gamma) ~ normal(0, 5); 
+  Y ~ normal(rows_dot_product(Beta[gg] , X),sigma); 
+} 
+```
+
+## Fitting the model
+
+```{r}
+library("rstan")
+library("codetools")
+fit <- stan("HierarchicalRegression.stan", data=c("J","Q","N","P", "gg", "X","U","Y"), 
+            control=list(adapt_delta=0.9, stepsize=0.005), chains=2, iter=1000, seed=1234);
+```
+
+## Modeling checking with replicated data
+
+```{r, echo=T}
+library(rstan)
+mod_fit <- extract(fit)         # Extracting the simulated parameters from Stan's output
+n_sims <- length(mod_fit$lp__)  # Total number of simulations (after warmup) for each parameter
+Yrep <- array(NA, c(n_sims, N)) # The matrix containing replicated data 
+for(s in 1:n_sims){
+  Yrep[s,] <- rnorm(N,rowSums(X * mod_fit$Beta[s, gg,]), mod_fit$sigma[s]) 
+  # Sampling replicated data
+  }
+```
+
+## Visualizing model fit
+
+```{r, echo=T, message=FALSE}
+library(bayesplot)
+library(ggplot2)
+library(cowplot)
+library(grid)
+```
+
+## Visualizing model fit (w. uncertainty)
+
+```{r, message=FALSE}
+plot1 <- ppc_stat(Y, Yrep, stat = "mean",binwidth = 0.2) + 
+  ggtitle("Average improvement over all students") 
+plot2 <- ppc_stat(Y, Yrep, stat = "sd", binwidth = 0.2) + 
+  ggtitle("Standard deviation of improvements over all students") 
+plots <- list(plot1, plot2)
+grobs <- lapply(plots, ggplotGrob)
+gr <-  do.call(gridExtra::rbind.gtable, grobs)
+grid.newpage()
+grid.draw(gr)
+```
+
+## Visualizing model fit (w. uncertainty)
+
+```{r}
+library("bayesplot")
+stat <- matrix(NA,1000,J)
+for(i in 1:1000) {stat[i,] <- tapply(Yrep[i,],xa,FUN="mean")}
+P <- tapply(Y,xa,FUN="mean")
+ppc_intervals(P, stat, U[,4], size=0.5, prob = 0.9) + 
+    xlab("A given school-level predictor") + ylab("Average Improvement in Each School")
+```
+
+## Visualizing model fit (w. uncertainty)
+
+```{r}
+stat <- matrix(NA,1000,J)
+for (i in 1:1000)
+    stat[i,] <- tapply(Yrep[i,],xa,FUN="sd")
+P <- tapply(Y,xa,FUN="sd")
+ppc_intervals(P, stat, U[,4], size=0.5, prob = 0.9) + 
+    xlab("A given school-level predictor") + ylab("Standard Deviation of Improvement in Each School")
+```
+
+## Visualizing model fit
+
+```{r}
+ppc_scatter_avg_grouped(Y,Yrep, group = xa, size=1.5)
+```
+
+```{r}
+library(shiny)
+library(shinythemes)
+Yrep_mean=rowMeans(Yrep)
+options(digits=2)
+shinyApp(
+  ui=fluidPage(theme = shinytheme("spacelab"),
+    sidebarPanel(
+      selectInput("sel.xa", label = "Level of a given school level predictor:",
+                  choices = sort(unique(xa)), selected = xa[1])
+    ),
+    mainPanel(
+      plotOutput("plot")
+    )
+  ),
+  server<-function(input, output) {
+    output$plot=renderPlot(height=600,{
+      par(font.main=1)
+      plot(Y[xa==input$sel.xa], Yrep_mean[xa==input$sel.xa],
+           main=paste("School-level predictor =", format(input$sel.xa)),
+           xlab="Y", ylab=expression(Y[rep]))
+      abline(lsfit(Y[xa==input$sel.xa], Yrep_mean[xa==input$sel.xa])$coef, col=2)
+      text(mean(Y[xa==input$sel.xa]), 
+           mean(Yrep_mean[xa==input$sel.xa]),
+           paste("slope=", format(lsfit(Y[xa==input$sel.xa], Yrep_mean[xa==input$sel.xa])$coef[2])))
+    })
+  }
+)
+```
