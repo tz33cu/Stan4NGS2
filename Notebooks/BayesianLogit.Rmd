@@ -1,0 +1,214 @@
+
+---
+title: "Stan notebook for logit regression"
+output:
+  html_notebook: default
+  html_document: default
+  pdf_document: default
+  authors: Ghazal Fazelnia - John Paisley, Department of Electrical Engineering, Columbia
+  University 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning = FALSE)
+```
+
+This is a stan notebook for logit regression to model the decision made by indivisual in a network (cooperation or defection). The factors are round number and fluid condition.Here are some of the statistics for this data.
+There are 785 unique players in 40 sessions. Each session has one of the four conditions "Static", "Random", "Fluid", and "Viscous".
+
+```{r}
+library(dplyr)
+library ("multiwayvcov")
+library ("lmtest")
+library("rstan")
+temp <- tempfile()
+download.file("http://davidrand-cooperation.com/s/Rand2011PNAS_data_and_code-pi6b.zip",temp, mode="wb")
+unzip(temp, "Rand2011PNAS_cooperation_data.txt")
+cooperation <- read.table("Rand2011PNAS_cooperation_data.txt", sep="\t",skip=0, header=T)
+
+coopoverTime <- rep(0,40)
+defoverTime <- rep(0,40)
+for (i in 1:40){
+  sesstmp = distinct(cooperation,sessionnum)[i,]
+  coopoverTime[i] = dim(filter(cooperation,decision..0.D.1.C.==1,sessionnum==sesstmp))
+  defoverTime[i] = dim(filter(cooperation,decision..0.D.1.C.==0,sessionnum==sesstmp))
+}
+
+
+counts <- cbind(coopoverTime/(defoverTime+coopoverTime), defoverTime/(defoverTime+coopoverTime))
+barplot(as.matrix(t(counts)), main="ratios of cooperation and defection in sessions",
+  xlab="session", col=c("darkblue","red"),
+ 	legend = c("cooperation","defection"))
+
+
+coopoverround <- rep(0,11)
+defoverround <- rep(0,11)
+for (i in 1:11){
+  roundtmp = distinct(cooperation,round_num)[i,]
+  coopoverround[i] = dim(filter(cooperation,decision..0.D.1.C.==1,round_num==roundtmp))
+  defoverround[i] = dim(filter(cooperation,decision..0.D.1.C.==0,round_num==roundtmp))
+}
+barplot(coopoverround/(defoverround+coopoverround),xlab='round',ylab = 'average ratio of cooperation',main="Average ratio of cooperation in rounds")
+barplot(defoverround/(defoverround+coopoverround),xlab='round',ylab = 'average ratio of defection',main = "Average ratio of defection in rounds")
+
+
+cTc=dim(filter(cooperation,previous_decision==1,decision..0.D.1.C.==1))[1]
+cTd=dim(filter(cooperation,previous_decision==1,decision..0.D.1.C.==0))[1]
+dTc=dim(filter(cooperation,previous_decision==0,decision..0.D.1.C.==1))[1]
+dTd=dim(filter(cooperation,previous_decision==0,decision..0.D.1.C.==0))[1]
+tmp=c(0,0,0,0)
+tmp[1]=cTc
+tmp[2]=dTd
+tmp[3]=cTd
+tmp[4]=dTc
+barplot(tmp,ylab="num of instances",names.arg = c("C -> C","D -> D","C -> D", "D -> C"),main = "plot to show change in decision in two consecutive round",col=c("darkblue"))
+
+
+
+coopoverneigh <- rep(0,19)
+defoverneigh <- rep(0,19)
+for (i in 1:19){
+  neightmp = distinct(cooperation,num_neighbors)[i,]
+  coopoverneigh[i] = dim(filter(cooperation,decision..0.D.1.C.==1,num_neighbors==neightmp))
+  defoverneigh[i] = dim(filter(cooperation,decision..0.D.1.C.==0,num_neighbors==neightmp))
+}
+
+mat.neigh.coop = cbind(distinct(cooperation,num_neighbors),coopoverneigh/(coopoverneigh+defoverneigh))
+
+ordered.mat = mat.neigh.coop[order(mat.neigh.coop$num_neighbors),]
+
+barplot(ordered.mat$`coopoverneigh/(coopoverneigh + defoverneigh)`,names.arg = ordered.mat$num_neighbors,xlab = "number of neighbors",ylab = "ratio of cooperation",main="ratio of cooperation with respect to number of neighbors",col=c("darkblue"))
+
+```
+
+
+
+```{r}
+#Rapidly updating networks promote cooperation relative to other conditions (coeff = 0.135, p = .006)
+
+logit <- glm(decision..0.D.1.C.~ fluid_dummy*round_num, data = cooperation, family = "binomial")
+#logit.multiwayvcov <- cluster.vcov(logit, cbind(cooperation$sessionnum, cooperation$playerid))
+#coeftest(logit, logit.multiwayvcov)
+
+```
+
+
+
+
+
+```{r}
+dat <- list(N        = nrow(cooperation),
+            p        = 4,
+            decision    = cooperation$decision..0.D.1.C.,
+            fluid_dummy = cooperation$fluid_dummy,
+            round_num      = cooperation$round_num)
+fileName <- "./logit.stan"
+stan_code <- readChar(fileName, file.info(fileName)$size)
+cat(stan_code)
+```
+
+
+<!-- ```{stan output.var=} -->
+<!-- data { -->
+
+<!--    int<lower=0> N; // Number of observations (an integer) -->
+<!--    int<lower=0> p; // Number of parameters -->
+<!--    // Variables -->
+<!--    int decision[N]; -->
+<!--    int<lower=0>  round_num[N]; -->
+<!--    int<lower=0>  fluid_dummy[N]; -->
+<!--  } -->
+
+<!--  parameters { -->
+<!--    // Define parameters to estimate -->
+<!--    real beta[p]; -->
+<!--  } -->
+
+<!--  transformed parameters  { -->
+<!--    // Probability trasformation from linear predictor -->
+<!--    real<lower=0> odds[N]; -->
+<!--    real<lower=0, upper=1> prob[N]; -->
+
+<!--    for (i in 1:N) { -->
+<!--      odds[i] <- exp(beta[1] + beta[2]*fluid_dummy[i] + beta[3]*round_num[i] +   beta[4]*round_num[i]*fluid_dummy[i]); -->
+<!--      prob[i] <- odds[i] / (odds[i] + 1); -->
+<!--    } -->
+<!--  } -->
+
+<!--  model { -->
+<!--   // Prior part of Bayesian inference (flat if unspecified) -->
+
+<!--     decision ~ bernoulli(prob); // Likelihood part of Bayesian inference -->
+<!--  } -->
+<!-- ``` -->
+
+
+```{r}
+resStan <- stan(model_code = stan_code, data = dat,
+                chains = 3, iter = 3000, warmup = 500, thin = 10)
+```
+
+```{r}
+fileName2 <- "./summarizedLogit.stan"
+stan_code2 <- readChar(fileName, file.info(fileName2)$size)
+cat(stan_code2)
+resStanSummarizedlogit <- stan(model_code = stan_code2, data = dat,
+                chains = 3, iter = 3000, warmup = 500, thin = 10)
+```
+
+
+
+
+```{r}
+## Show traceplot
+traceplot(resStan, pars = c("beta"), inc_warmup = TRUE)
+```
+
+```{r}
+
+## Show traceplot
+traceplot(resStanSummarizedlogit, pars = c("beta"), inc_warmup = TRUE)
+```
+
+
+These are the coefficient in generalized linear model without stan:
+
+```{r}
+logit$coefficients
+```
+
+These are the coefficients in generalized linear model when using stan and my own implementation of the model:
+```{r}
+
+list_of_draws <- extract(resStan)
+list_of_draws$beta[dim(list_of_draws$beta)[2],]
+```
+However, the mean of draws are:
+```{r}
+c(mean(list_of_draws$beta[,1]),mean(list_of_draws$beta[,2]),mean(list_of_draws$beta[,3]),mean(list_of_draws$beta[,4]))
+```
+
+
+These are the coefficients in generalized linear model when using stan and stan implementation of the model:
+```{r}
+list_of_draws2 <- extract(resStanSummarizedlogit)
+list_of_draws2$beta[dim(list_of_draws2$beta)[2],]
+```
+However, the mean of draws are:
+```{r}
+c(mean(list_of_draws2$beta[,1]),mean(list_of_draws2$beta[,2]),mean(list_of_draws2$beta[,3]),mean(list_of_draws2$beta[,4]))
+```
+
+Posterior draws are:
+
+```{r}
+par(mfrow=c(2,4))
+hist(list_of_draws$beta[,1],main="beta[1]",xlab = " ")
+hist(list_of_draws$beta[,2],main="beta[2]",xlab = " ",ylab=" ")
+hist(list_of_draws$beta[,3],main="beta[3]",xlab = " ",ylab=" ")
+hist(list_of_draws$beta[,4],main="beta[4]",xlab = " ",ylab=" ")
+hist(list_of_draws2$beta[,1],main="beta[1]",xlab = " ")
+hist(list_of_draws2$beta[,2],main="beta[2]",xlab = " ",ylab=" ")
+hist(list_of_draws2$beta[,3],main="beta[3]",xlab = " ",ylab=" ")
+hist(list_of_draws2$beta[,4],main="beta[4]",xlab = " ",ylab=" ")
+```
