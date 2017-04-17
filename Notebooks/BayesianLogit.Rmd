@@ -1,12 +1,9 @@
 
 ---
 title: "Stan notebook for logit regression"
-output:
-  html_notebook: default
-  html_document: default
-  pdf_document: default
-  authors: Ghazal Fazelnia - John Paisley, Department of Electrical Engineering, Columbia
-  University 
+output: html_document
+authors: Ghazal Fazelnia - John Paisley, Department of Electrical Engineering, Columbia
+  University
 ---
 
 ```{r setup, include=FALSE}
