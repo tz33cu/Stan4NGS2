@@ -4,8 +4,8 @@ author: Ghazal Fazelnia (EE, Columbia), John Paisley (EE, Columbia) and Tian Zhe
   (Statistics, Columbia)
 date: "April 24, 2017"
 output:
-  html_document: default
   html_notebook: default
+  html_document: default
 bibliography: stan_notebook.bib
 ---
 
@@ -86,7 +86,7 @@ levels(cooperation$condition)=list(Fixed="Static",
 
 Here are some of the statistics for this data (generated in-line): 
 
-+ There are `r length(unique(cooperation$playerid))` unique players
++ There are `r length(unique(cooperation$playerid))/10` unique players
 + In `r length(unique(cooperation$sessionnum))` sessions. 
 + Each session has one of the `r length(unique(cooperation$condition))` conditions: `r unique(cooperation$condition)`.
 
