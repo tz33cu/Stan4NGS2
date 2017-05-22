@@ -2,7 +2,7 @@
 title: "Stan notebook for logistic regression on data from @Rand29112011"
 author: Ghazal Fazelnia (EE, Columbia), John Paisley (EE, Columbia) and Tian Zheng
   (Statistics, Columbia)
-date: "April 24, 2017"
+date: "May 22, 2017"
 output:
   html_notebook: default
   html_document: default
@@ -46,6 +46,8 @@ if (!require("rstan")) install.packages('rstan')
 if (!require("DT")) install.packages('DT')
 if (!require("ggplot2")) install.packages('ggplot2')
 if (!require("rstanarm")) install.packages('rstanarm')
+if (!require("data.table")) install.packages('data.table')
+if (!require("boot")) install.packages('boot')
 
 library("dplyr")
 library ("multiwayvcov")
@@ -54,6 +56,8 @@ library("rstan")
 library("DT")
 library("ggplot2")
 library('rstanarm')
+library('data.table')
+library('boot')
 ```
 
 ### Download the data and import the data into `R`.
@@ -69,7 +73,7 @@ In the *notebook* mode, we are able to process data from a URL link. This greatl
 cooperation <- read.table("data/Rand2011PNAS_cooperation_data.txt", sep="\t",skip=0, header=T)
 names(cooperation)
 datatable(sample_n(cooperation, 50), 
-          caption = "Randonly selected rows of data.",
+          caption = "Randomly selected rows of data.",
           options = list(
               scrollX = TRUE,
               scrollCollapse = TRUE))
@@ -561,3 +565,206 @@ run.time=difftime(end.time, start.time, "secs")
 This report was produced in `r format(run.time)`.
 
 More examples of `rstanarm` can be found at <https://cran.r-project.org/web/packages/rstanarm/>.
+
+
+#### Analysis with Bootstrapping
+In this section, we use bootstrapped data set (resampled data sets from original set).
+#### sampling from rows
+This part consider each row as a data point
+```{r}
+logit.bootstrap <- function(data, indices) {
+    d <- data[indices, ]
+  fit.glm <- glm(decision..0.D.1.C.~ fluid_dummy*round_num, data = d, family = "binomial")
+  return(coef(fit.glm))
+}
+
+logit.boot <- boot(data=cooperation, statistic=logit.bootstrap, R=30) # R: number of samples
+
+
+fileName <- "./lib/logit.stan"
+stan_code <- readChar(fileName, 
+                      file.info(fileName)$size)
+cat(stan_code)
+
+logit.stan.bootstrap <- function(data , indices){
+  d <- data[indices,]
+  dat <- list(N        = nrow(d),
+            p        = 4,
+            decision    = d$decision..0.D.1.C.,
+            fluid_dummy = d$fluid_dummy,
+            round_num      = d$round_num)
+  fit.stan.logit <- stan(model_code = stan_code, data = dat,
+                chains = 3, iter = 3000, warmup = 500, thin = 10)
+  list_of_draws.bootstrap <- extract(fit.stan.logit)
+  return(list_of_draws.bootstrap$beta[dim(list_of_draws.bootstrap$beta)[2],])
+}
+
+logit.stan.boot <- boot(data=cooperation, statistic=logit.stan.bootstrap, R=3) # R: number of samples
+
+
+```
+
+#### Bootstrapping with respect to session number
+This part performs bootstrapping when resampling from sessions.
+First, specify the number of bootstrapped sets:
+```{r}
+num.boot.sets = 2
+```
+
+Bootstrapped data set:
+```{r}
+samp = matrix(nrow=num.boot.sets,ncol=length(unique(cooperation$sessionnum)))
+logit.bootstrap.session = matrix(nrow=num.boot.sets,ncol=4)
+bootstrap.session.beta = array(rep(0,num.boot.sets*4*750),c(750,4,num.boot.sets))
+y_rep = array(rep(0,4500*3876*num.boot.sets),c(4500,3876,num.boot.sets))
+
+for (i in 1:num.boot.sets){
+  samp[i,] <- sample(unique(cooperation$sessionnum),40, replace=TRUE)
+  tmp.assign <- do.call(rbind, lapply(samp[i,], function(x) cooperation[cooperation$sessionnum == x,]))
+  logit.bootstrap.session.tmp <- glm(decision..0.D.1.C.~ fluid_dummy*round_num, data = tmp.assign,family = "binomial")
+  logit.bootstrap.session[i,] = logit.bootstrap.session.tmp$coefficients
+ 
+  dat.bootstrap.session.tmp <- list(N        = nrow(tmp.assign),
+                                  p        = 4,
+                                  decision    = tmp.assign$decision..0.D.1.C.,
+                                  fluid_dummy = tmp.assign$fluid_dummy,
+                                  round_num      = tmp.assign$round_num)
+ fileName <- "./lib/logit.stan"
+ stan_code <- readChar(fileName, 
+                      file.info(fileName)$size)
+ cat(stan_code)
+ resStan.bootstrap.session.tmp <- stan(model_code = stan_code, data = dat.bootstrap.session.tmp,
+                chains = 3, iter = 3000, warmup = 500, thin = 10)
+
+ list_of_draws.bootstrap.session.tmp <- extract(resStan.bootstrap.session.tmp)
+ bootstrap.session.beta[,,i] <- list_of_draws.bootstrap.session.tmp$beta
+ y_rep[,,i] <- posterior_predict(glm.out)
+ 
+}
+
+
+```
+
+#### Summary for Bootstrapping
+This table shows the summary of results for bootstrapping.
+```{r}
+mytable <- rbind(logit$coefficients,
+                 logit.bootstrap.session,
+                 list_of_draws$beta[dim(list_of_draws$beta)[2],],
+                 t(bootstrap.session.beta[dim(bootstrap.session.beta)[1],,]))
+rownames(mytable) <- c("logit","logit_boot_1","logit_boot_2","Bayes_logit","Bayes_logit_boot_1","Bayes_logit_boot_2") # for 2bootstraps
+datatable(mytable, 
+          caption = "coefficients for linear regression usign different methods and bootstrapping",
+          options = list(
+              scrollX = TRUE,
+              scrollCollapse = TRUE))
+```
+
+
+Posterior distribution draws are as follow:
+
+```{r}
+for (j in 1:4){
+  par(mfrow=c(1,3))
+  plot(density(list_of_draws$beta[,j]),xlab = " ", ylab=" ",main="orig_bayes")
+  for (i in 1:num.boot.sets){
+  plot(density(bootstrap.session.beta[,j,i]),xlab = " ", ylab=" ",main=paste0("boot",i))
+  }
+}
+```
+
+
+#### Comparing KL-divergence
+```{r}
+KL.divergence <- array(rep(0,(1+num.boot.sets)*(1+num.boot.sets)*4),c((1+num.boot.sets),(1+num.boot.sets),4))
+for (j in 1:4){
+  for (i in 1:(1+num.boot.sets)){
+    for (q in 1:(1+num.boot.sets)){
+      if (i==1){
+        if(q==1)
+          KL.divergence[i,q,j] <- KLD(list_of_draws$beta[,j],list_of_draws$beta[,j])$sum.KLD.px.py
+      
+        else{
+          KL.divergence[i,q,j] <- KLD(list_of_draws$beta[,j],bootstrap.session.beta[,j,(q-1)])$sum.KLD.px.py
+        }
+      }
+      else{
+        if(q==1){
+          KL.divergence[i,q,j] <- KLD(bootstrap.session.beta[,j,(i-1)],list_of_draws$beta[,j])$sum.KLD.px.py
+        }
+        else{
+          KL.divergence[i,q,j] <- KLD(bootstrap.session.beta[,j,(i-1)],bootstrap.session.beta[,j,(q-1)])$sum.KLD.px.py
+        }
+      }
+    }
+  }
+}
+
+row.names(KL.divergence) <- c("orig_bayes","boot1","boot2")
+colnames(KL.divergence) <- c("orig_bayes","boot1","boot2")
+KL.divergence
+
+```
+
+#### Predicted mean
+choose index of bootstrap sample:
+```{r}
+boot.ind = 1
+```
+
+
+```{r}
+
+data.mean=
+  cooperation%>%
+  group_by(fluid_dummy, 
+           round_num)%>%
+  summarise(
+    mean_decision=mean(decision)
+  )
+
+predicted.mean=NULL
+for(i in 1:nrow(y_rep)){
+  tmp=cooperation
+  tmp$predicted=y_rep[i,,boot.ind]
+  tmp.mean=
+    tmp%>%
+    group_by(fluid_dummy, round_num)%>%
+    summarise(
+      mean_decision=mean(predicted)
+    )
+  tmp.mean$rep=rep(i, nrow(tmp.mean))
+  predicted.mean=rbind(predicted.mean, tmp.mean)
+}
+```
+
+```{r}
+ggplot(predicted.mean, aes(x=factor(round_num), 
+                           y=mean_decision,
+                           fill=fluid_dummy))+
+        geom_boxplot()+
+        facet_grid(.~factor(fluid_dummy))+
+        labs(x="round")+
+        theme(axis.text.x=element_text(angle=0, vjust=0.4,hjust=1))
+
+par(mfrow=c(1,2))
+boxplot(mean_decision~round_num,
+        data=predicted.mean[predicted.mean$fluid_dummy == 1, ], 
+        main = "Fluid = 1", pch = NA,
+        xlab = "round", 
+        ylab = "Proportion of cooperation")
+with(data.mean[data.mean$fluid_dummy==1, ],
+     points(round_num, mean_decision,
+            pch = 16, col = "red"))
+
+boxplot(mean_decision~round_num,
+        data=predicted.mean[predicted.mean$fluid_dummy == 0, ], 
+        main = "Fluid = 0", pch = NA,
+        xlab = "round", 
+        ylab = "Proportion of cooperation")
+with(data.mean[data.mean$fluid_dummy==0, ],
+     points(round_num, mean_decision,
+            pch = 16, col = "red"))
+
+```
+
