@@ -48,6 +48,7 @@ if (!require("ggplot2")) install.packages('ggplot2')
 if (!require("rstanarm")) install.packages('rstanarm')
 if (!require("data.table")) install.packages('data.table')
 if (!require("boot")) install.packages('boot')
+if (!require("LaplacesDemon")) install.packages('LaplacesDemon')
 
 library("dplyr")
 library ("multiwayvcov")
@@ -58,6 +59,7 @@ library("ggplot2")
 library('rstanarm')
 library('data.table')
 library('boot')
+library("LaplacesDemon")
 ```
 
 ### Download the data and import the data into `R`.
