@@ -618,7 +618,6 @@ Bootstrapped data set:
 samp = matrix(nrow=num.boot.sets,ncol=length(unique(cooperation$sessionnum)))
 logit.bootstrap.session = matrix(nrow=num.boot.sets,ncol=4)
 bootstrap.session.beta = array(rep(0,num.boot.sets*4*750),c(750,4,num.boot.sets))
-y_rep = array(rep(0,4500*3876*num.boot.sets),c(4500,3876,num.boot.sets))
 
 for (i in 1:num.boot.sets){
   samp[i,] <- sample(unique(cooperation$sessionnum),40, replace=TRUE)
@@ -640,7 +639,7 @@ for (i in 1:num.boot.sets){
 
  list_of_draws.bootstrap.session.tmp <- extract(resStan.bootstrap.session.tmp)
  bootstrap.session.beta[,,i] <- list_of_draws.bootstrap.session.tmp$beta
- y_rep[,,i] <- posterior_predict(glm.out)
+ 
  
 }
 
@@ -654,7 +653,7 @@ mytable <- rbind(logit$coefficients,
                  logit.bootstrap.session,
                  list_of_draws$beta[dim(list_of_draws$beta)[2],],
                  t(bootstrap.session.beta[dim(bootstrap.session.beta)[1],,]))
-rownames(mytable) <- c("logit","logit_boot_1","logit_boot_2","Bayes_logit","Bayes_logit_boot_1","Bayes_logit_boot_2") # for 2bootstraps
+rownames(mytable) <- c("logit","logit_boot_1","logit_boot_2","Bayes_logit","Bayes_logit_boot_1","Bayes_logit_boot_2") # for 2 bootstraps
 datatable(mytable, 
           caption = "coefficients for linear regression usign different methods and bootstrapping",
           options = list(
@@ -708,65 +707,5 @@ KL.divergence
 
 ```
 
-#### Predicted mean
-choose index of bootstrap sample:
-```{r}
-boot.ind = 1
-```
 
-
-```{r}
-
-data.mean=
-  cooperation%>%
-  group_by(fluid_dummy, 
-           round_num)%>%
-  summarise(
-    mean_decision=mean(decision)
-  )
-
-predicted.mean=NULL
-for(i in 1:nrow(y_rep)){
-  tmp=cooperation
-  tmp$predicted=y_rep[i,,boot.ind]
-  tmp.mean=
-    tmp%>%
-    group_by(fluid_dummy, round_num)%>%
-    summarise(
-      mean_decision=mean(predicted)
-    )
-  tmp.mean$rep=rep(i, nrow(tmp.mean))
-  predicted.mean=rbind(predicted.mean, tmp.mean)
-}
-```
-
-```{r}
-ggplot(predicted.mean, aes(x=factor(round_num), 
-                           y=mean_decision,
-                           fill=fluid_dummy))+
-        geom_boxplot()+
-        facet_grid(.~factor(fluid_dummy))+
-        labs(x="round")+
-        theme(axis.text.x=element_text(angle=0, vjust=0.4,hjust=1))
-
-par(mfrow=c(1,2))
-boxplot(mean_decision~round_num,
-        data=predicted.mean[predicted.mean$fluid_dummy == 1, ], 
-        main = "Fluid = 1", pch = NA,
-        xlab = "round", 
-        ylab = "Proportion of cooperation")
-with(data.mean[data.mean$fluid_dummy==1, ],
-     points(round_num, mean_decision,
-            pch = 16, col = "red"))
-
-boxplot(mean_decision~round_num,
-        data=predicted.mean[predicted.mean$fluid_dummy == 0, ], 
-        main = "Fluid = 0", pch = NA,
-        xlab = "round", 
-        ylab = "Proportion of cooperation")
-with(data.mean[data.mean$fluid_dummy==0, ],
-     points(round_num, mean_decision,
-            pch = 16, col = "red"))
-
-```
 
