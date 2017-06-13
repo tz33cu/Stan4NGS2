@@ -92,7 +92,7 @@ levels(cooperation$condition)=list(Fixed="Static",
 
 Here are some of the statistics for this data (generated in-line): 
 
-+ There are `r length(unique(cooperation$playerid))/10` unique players
++ There are `r length(unique(cooperation$playerid))` unique players
 + In `r length(unique(cooperation$sessionnum))` sessions. 
 + Each session has one of the `r length(unique(cooperation$condition))` conditions: `r unique(cooperation$condition)`.
 
@@ -126,9 +126,10 @@ datatable(session_info,
 #### The number of players vary within and between experimental conditions. 
 
 ```{r display_numplayers}
-ggplot(data = session_info, aes(x=num_player))+
-  geom_histogram(aes(weights=..count.., 
-                     fill=condition))+
+ggplot(data = session_info, 
+       aes(x=num_player))+
+          geom_histogram(aes(weights=..count.., 
+                        fill=condition))+
   scale_fill_brewer(palette="Set3")+
   facet_wrap(~condition, ncol=1)
 ```
@@ -332,7 +333,8 @@ c(mean(list_of_draws$beta[,1]),
 
 ```{r, eval=F}
 cooperation$decision=cooperation$decision..0.D.1.C.
-glm.out=stan_glm(decision~fluid_dummy+round_num+fluid_dummy*round_num, 
+glm.out=stan_glm(decision~fluid_dummy+round_num+
+                   fluid_dummy*round_num, 
                 data=cooperation,
                 family = binomial(link = "logit"), 
                 prior = student_t(df = 7), 
@@ -345,7 +347,8 @@ cbind(Median = coef(glm.out),
 
 ```{r, message=F, echo=T, include=F}
 cooperation$decision=cooperation$decision..0.D.1.C.
-glm.out=stan_glm(decision~fluid_dummy+round_num+fluid_dummy*round_num, 
+glm.out=stan_glm(decision~fluid_dummy+round_num
+                 +fluid_dummy*round_num, 
                 data=cooperation,
                 family = binomial(link = "logit"), 
                 prior = student_t(df = 7), 
