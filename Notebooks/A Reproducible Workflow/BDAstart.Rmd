@@ -1,0 +1,1135 @@
+---
+title: "A Reproducible Workflow with Bayesian Modeling"
+author: "Anna Smith (Statistics, Columbia), Tian Zheng (Statistics, Columbia) and Ghazal Fazelnia (EE, Columbia)"
+date: "August 2017"
+output:
+  html_document:
+    highlight: tango
+    theme: journal
+    toc: yes
+    toc_depth: 2
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+bibliography: bib/GallupNotebook.bib
+---
+
+```{r include=FALSE}
+runModels <- TRUE
+```
+
+# Getting started
+
+This is an `R` notebook which uses [Stan](http://mc-stan.org/), a probabilistic programming language, to fit Bayesian models.  This notebook is meant to serve as an example of reproducible research, by fully documenting an analytical workflow, and also to demonstrate some best practices in Bayesian model assesment.
+
+The analysis presented below is based on @rand_arbesman_christakis_2011 [(available here)](https://www.ncbi.nlm.nih.gov/pubmed/22084103) where the authors consider the role of social networks in the development of large-scale cooperation among individuals in an economic game.  The authors use a logistic regression model to examine individuals' decisions (cooperation or defection) and show that social networks which can be frequently updated by participants (rather than fixed throughout the course of the game or randomly updated) foster cooperative decisions in this setting.
+
+Although the code and specific models provided here are particular to this dataset, one goal of this notebook is to provide a general outline of a "good" workflow for Bayesian analyses.  In different settings or with different data, each section outlined here might be implemented differently (for example, adding an imputation model to deal with missing covariate data or utilizing a more complex model).  However, we argue that by documenting the complete workflow -- from data collection to answering research hypotheses to model checking -- as we have done here, research becomes more reproducible and, additionally, cross-study comparisons can be more easily tackled.
+
+### Software 
+
+This notebook uses the following `R` packages:
+
+* [rstan](https://cran.r-project.org/web/packages/rstan/index.html) to interface with `Stan` to fit Bayesian models
+* [rstanarm](https://cran.r-project.org/web/packages/rstanarm/index.html) which provides wrapper functions for common `Stan` models
+* [ggplot](https://cran.r-project.org/web/packages/ggplot2/index.html) for plotting
+* [trelliscopejs](http://ryanhafen.com/blog/trelliscopejs) for creating interactive small multiples plots
+* as well as some other packages to facilitate efficient coding, [devtools](https://cran.r-project.org/web/packages/devtools/index.html), [dplyr](https://cran.r-project.org/web/packages/dplyr/index.html), [multiwayvcov](https://cran.r-project.org/web/packages/multiwayvcov/index.html), [lmtest](https://cran.r-project.org/web/packages/lmtest/index.html), [DT](https://cran.r-project.org/web/packages/DT/index.html), [data.table](https://cran.r-project.org/web/packages/data.table/index.html), [boot](https://cran.r-project.org/web/packages/boot/index.html), and [LaplacesDemon](https://cran.r-project.org/web/packages/LaplacesDemon/index.html).
+
+and was built using `R` *version 3.4.0.*  Please be sure that all packages (and dependencies) listed above are installed and that the version of `R` on your machine is up to date.
+
+```{r setup, message=FALSE, include=FALSE}
+if (!require("rstan")) install.packages('rstan')
+if (!require("rstanarm")) install.packages('rstanarm')
+if (!require("ggplot2")) install.packages('ggplot2')
+
+if (!require("devtools")) install.packages('devtools')
+if (!require("trelliscopejs")) devtools::install_github("hafen/trelliscopejs")
+
+if (!require("dplyr")) install.packages('dplyr')
+if (!require("multiwayvcov")) install.packages('multiwayvcov')
+if (!require("lmtest")) install.packages('lmtest')
+if (!require("DT")) install.packages('DT')
+if (!require("data.table")) install.packages('data.table')
+if (!require("boot")) install.packages('boot')
+if (!require("LaplacesDemon")) install.packages('LaplacesDemon')
+
+library("rstan")
+library('rstanarm')
+library("ggplot2")
+
+library("trelliscopejs")
+
+library("dplyr")
+library ("multiwayvcov")
+library ("lmtest")
+library("DT")
+library('data.table')
+library('boot')
+library("LaplacesDemon")
+
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, strip.white=TRUE, tidy=TRUE)
+start.time=Sys.time()
+```
+
+# A reproducible workflow
+To increase transparency, we aim to document a (perhaps simplified) workflow in its entirety, from the generation of research hypothesis through data collection and cleaning to modeling techniques all the way through uncertainty evaluation and prediction.
+
+## Research goals
+
+### Research questions 
+Generally, @rand_arbesman_christakis_2011 are interested in considering the role of a social network in fostering cooperative actions among a group of individuals.  Although cooperation is beneficial for large groups, at the individual level, cooperative actions often leave the individual exposed to exploitation.  Some evolutionary game theory models suggest that the social network of individuals can help explain the proliferation of cooperative strategies.  See @rand_arbesman_christakis_2011 for more details.
+
+Previous empirical research has only considered fixed, non-dynamic social networks. The authors argue that implementing dynamically-updated networks allows for a new type of conditional action, where individuals may change their decision to cooperate based on changes in the network structure.
+
+### Testable hypotheses
+The authors hypothesize that implementing *frequent user-updated social networks will more strongly promote cooperation*, relative to other conditions.
+
+In their paper, the authors discuss other interesting hypotheses, but for demonstration we will focus only on this particular hypothesis.
+
+## Study design
+
+### Sampling
+
+Subjects were recruited using the online labor market Amazon Mechanical Turk (see the Supporting Information for  @rand_arbesman_christakis_2011 for more details).
+
+### Experimental design
+
+The authors randomly assigned 785 participants to one of four conditions (see below) in a series of 40 realizations of network experiments (average network size = 19.6; SD = 6.4).  In all conditions, subjects play a repeated cooperative dilemma (each game/session consisted of ## rounds) in an artificial social network created in the virtual laboratory:
+
++ Each player resides on a nonweighted network, with 20% of all possible links connected *randomly*.
++ His/her *neighbors* are players connected to him/her in this network.
++ During each round of the game, each player can choose one of the following two actions,
+    - Cooperation: donate 50 units per neighbor; each neighbor actually gains 100 units
+    - Defection: donate nothing; neighbors get nothing
++ Before each round, players are reminded of their number of neighbors and these neighbors' prior decisions. 
++ After each round, players learn about the decisions of their neighbors and their own payoff.
++ The probability of rewiring (i.e., changing connections in the network) for each subsequent round is 80%, which is communicated to players. 
+
+Additionally, the experimenters implemented a variety of different conditions/settings for the behavior of the network in the game:
+
++ **Static** (fixed) links 
++ **Random** link updating (i.e., the entire network is regenerated at each round)
++ *Strategic link updating*: a rewiring step is performed after each round where subject pairs are randomly selected and one randomly selected actor of the selected pair is given the option to change the link status of the selected pair (connected to disconnected, or disconnected to connected.) The deciding actor is provided with alter's behavior during the previous round. At the end of the rewiring step, each player receives summaries about updates to the network that involve him/her. 
+    - **Viscous**: 10% of subject pairs are selected
+    - **Fluid**: 30% of subject pairs are selected
+    
+## Data cleaning
+    
+### Import data
+
+This data has been made publicly available ([here](http://davidrand-cooperation.com/s/Rand2011PNAS_data_and_code-pi6b.zip)), which greatly improves reproducibility. 
+
+Below, we display 50 randomly selected rows from this dataset:
+```{r load-data}
+#temp <- tempfile()
+#download.file("http://davidrand-cooperation.com/s/Rand2011PNAS_data_and_code-pi6b.zip",
+#              "data/Rand2011PNAS_data_and_code-pi6b.zip", 
+#              mode="wb")
+#unzip("Rand2011PNAS_data_and_code-pi6b.zip")
+cooperation <- read.table("data/Rand2011PNAS_cooperation_data.txt", sep="\t",skip=0, header=T)
+#names(cooperation)
+datatable(sample_n(cooperation, 50), 
+          #caption = "Randomly selected rows of data.",
+          options = list(
+              scrollX = TRUE, searching=FALSE,
+              scrollCollapse = TRUE))
+```
+
+### Handle implausible values
+We should check for any missing or implausible values in the imported data set:
+```{r}
+summary(cooperation)
+```
+
+### Address incomplete observations
+The dataset imported here has already been cleaned for this analysis.  The authors chose to drop inactive participants from this dataset (see the Supporting Information for @rand_arbesman_christakis_2011 for more details).
+
+
+## Exploratory data analysis
+We present a very brief example of some exploratory data analysis tasks.  In practice, this section could be fleshed out much more.
+
+### Basic attributes
+
+```{r relevel_condition}
+levels(cooperation$condition)=list(Fixed="Static",
+                                   Random="Random",
+                                   Viscous="Viscous",
+                                   Fluid="Fluid")
+session_info=cooperation%>%
+  group_by(sessionnum)%>%
+  summarise(
+    num_player=length(unique(playerid)),
+    condition=unique(condition)[1],
+    roundnum=max(round_num)
+  )%>%
+  arrange(condition)
+```
+
+Here are some of the statistics for this data (generated in-line): 
+
++ There are `r length(unique(cooperation$playerid))` unique players
++ in `r length(unique(cooperation$sessionnum))` sessions/experiments. 
++ Each session has up to `r max(session_info$roundnum)` rounds, with individuals playing `r min(session_info$roundnum)` to `r max(session_info$roundnum)` rounds.
++ Each session has one of the `r length(unique(cooperation$condition))` conditions: `r unique(cooperation$condition)`.
+
+Each session is assigned a particular network link updating strategy (condition) and may contain a different number of players.  Below is the summarized session information:
+
+```{r display_DT, warning=FALSE}
+## Display session_info
+datatable(session_info, 
+          #caption = "Sessions: number of players and game conditions",
+          options = list(
+              scrollX = TRUE, searching=FALSE,
+              scrollCollapse = TRUE))
+```
+
+Note that the number of players vary both within and between experimental conditions:
+
+```{r display_numplayers, message=FALSE}
+ggplot(data = session_info, 
+       aes(x=num_player))+
+          geom_histogram(aes(weights=..count.., 
+                        fill=condition))+
+  scale_fill_brewer(palette="Set3")+
+  facet_wrap(~condition, ncol=1)
+```
+
+### Overall patterns
+In the following sections, we consider how players change their behavior over the course of a game.
+
+##### Cooperation rate
+
++ The rate of cooperation tends to decline as the game proceeds
++ The rate of decline differs across experimental conditions. 
+
+```{r session_plot, fig.height=3, fig.width=10}
+session_round_rate=cooperation%>%
+                      group_by(sessionnum, 
+                               round_num)%>%
+                      summarise(
+                        rate_contr=mean(decision..0.D.1.C.)
+                      )
+session_round_rate=left_join(session_round_rate, 
+                             session_info,
+                             by="sessionnum")
+
+ggplot(session_round_rate, 
+       aes(x=factor(round_num), 
+           y=rate_contr,
+           fill=condition))+
+    geom_boxplot()+
+    facet_grid(.~condition)+
+    labs(x="round")+
+    theme(axis.text.x=element_text(angle=0, 
+                                   vjust=0.4,
+                                   hjust=1))
+```
+
+##### Individual behavior
+
++ Players are most likely stay in one mode;
++ but more likely to shift from cooperation to defection than vice versa.
+
+```{r display_transtion, fig.width=4, fig.height=3}
+
+action.info=
+  cooperation%>%
+  group_by(previous_decision, 
+           decision..0.D.1.C.)%>%
+  summarise(
+    count=n()
+  )
+
+# reorder the rows
+action.info=action.info[c(4,1,3,2), ]
+
+par(mar=c(3,3,1,1)+.1)
+barplot(t(action.info[,3]),
+        ylab="Frequency",
+        names.arg = c("C -> C","D -> D",
+                      "C -> D", "D -> C"),
+        col=c("lightgray"))
+
+```
+
+##### Impact of social connections
+
++ Players' tendency to contribute depends on their number of neighbors and whether they can choose their neighbors. 
+
+```{r display_coop_neigh, fig.height=3, fig.width=10}
+coop_neighbor=
+  cooperation%>%
+  group_by(condition, 
+           num_neighbors, 
+           sessionnum)%>%
+  summarise(
+    rate_contr=mean(decision..0.D.1.C.)
+  )
+
+ggplot(coop_neighbor, 
+       aes(x=factor(num_neighbors), 
+           y=rate_contr,
+           fill=condition))+
+    geom_boxplot()+
+    facet_grid(.~condition)+
+    labs(x="number of neighbors")+
+    theme(axis.text.x=element_text(angle=0, 
+                                   vjust=0.4,
+                                   hjust=1))
+ggplot(cooperation, 
+       aes(x=factor(round_num), 
+           y=num_neighbors,
+           fill=condition))+
+    geom_boxplot()+
+    facet_grid(.~condition)+
+    labs(x="round")+
+    theme(axis.text.x=element_text(angle=0, 
+                                   vjust=0.4,
+                                   hjust=1))
+```
+
+## Modeling approaches
+In this analysis, we focus on fitting Bayesian versions of the logistic regression models implemented in @rand_arbesman_christakis_2011.  In their paper, the main model focuses on the **round number** and **condition** used for network link updating (i.e., static, random, viscose, or fluid).  This model also accounts for dependence across decisions made by the same player as well as across players in the same session by incorporating random effects at the individual- and session-level
+
+If we let $y_{ijk}$ be the decision made by player $j$ in the $i$th round of session $k$ so that $y_{ijk}=1$ if player $j$ chooses to cooperate in round $i$ of session $k$ and $y_{ijk}=0$ otherwise.  Then our model is simply
+\begin{align*}
+Y_{ijk} & \sim \text{Bernoulli}(p_{ijk}) \\
+\text{logit}(p_{ijk}) &= \beta_1 + \beta_2 x_{1jk} + \beta_3 x_{2k} + \beta_4 x_{1jk} x_{2k} + \tau^{(indiv)}_i + \tau^{(sess)}_{k} \\
+\tau^{(indiv)}_i & \sim \text{Normal}(0,\sigma^{(indiv)}) \\
+\tau^{(sess)}_k & \sim \text{Normal}(0,\sigma^{(sess)})
+\end{align*}
+where $p_{ijk}$ is the probability that player $j$ cooperates in round $i$ of session $k$, $x_{1jk}$ is the round number and $x_{2k}$ is an indicator for the network behavior setting of the $k$th session, with $x_{2k}=1$ if the $k$th session has fluid network link updating and $x_{2k}=0$ otherwise.  $\sigma^{(indiv)}$ and $\sigma^{(sess)}$ capture the variation within players and sessions, respectively.
+
+Note that the main conclusion from @rand_arbesman_christakis_2011 states that *rapidly updating networks promote cooperation relative to other conditions*, which is confirmed using a one-sided hypothesis test for $\beta_4$.  In the paper, the authors provide an estimate, $\hat{\beta}_4=0.135$, with a small p-value, $0.006$.
+
+In the following sections, we demonstrate how to fit this model and perform the hypothesis test using `Stan`.
+
+### Variable transformations
+No variable transformations are necessary for this analysis. *Round number* is an integer, and we use a dummy indicator for the fluid *condition*, e.g.
+```{r, echo=TRUE, eval=FALSE}
+cooperation$fluid_dummy <- 1*(cooperation$condition=="Fluid")
+```
+
+To keep track of players and sessions, we create index tables for each, so that they can be easily renumbered:
+```{r, echo=TRUE}
+playerIDs <- data.frame( id=unique(cooperation$playerid),
+                          index=1:length(unique(cooperation$playerid)) )
+indivIndex <- unlist(lapply( 1:nrow(cooperation), 
+                      function(i){ playerIDs$index[playerIDs$id == cooperation$playerid[i]]} ))
+
+sessionIDs <- data.frame( id=unique(cooperation$sessionnum),
+                          index=1:length(unique(cooperation$sessionnum)) )
+sessIndex <- unlist(lapply( 1:nrow(cooperation), 
+                      function(i){ sessionIDs$index[sessionIDs$id == cooperation$sessionnum[i]]} ))
+```
+
+### A 'Stan' model
+
+First, we can specify our model directly in `R`, as shown below, or save it using a text editor as separate *.stan* file.  The code provided below was created with readibility and ease of interpretation in mind, for more details about to write efficient model code in Stan, see the [documentation](http://mc-stan.org/users/documentation/index.html) (e.g., Section 9.9 in the Language Manual).
+
+```{r, include=TRUE, echo=TRUE}
+logit_model <- '
+data {
+  
+  // Dimensions
+  int<lower=1> N;        // Number of observations
+  int<lower=1> p;        // Number of parameters
+  int<lower=1> N_indiv;  // Number of individuals
+  int<lower=1> N_sess;   // Number of sessions
+
+  // Indices
+  int<lower=1,upper=N_indiv> indiv[N];
+  int<lower=1,upper=N_sess> sess[N];
+
+  // Outcome
+  int<lower=0,upper=1> y[N];
+
+  // Covariates
+  real  x1[N];
+  real  x2[N];
+}
+
+parameters {
+  real  beta[p];
+  real  tau_indiv[N_indiv];
+  real  tau_sess[N_sess];
+  real<lower=0> prec_indiv;
+  real<lower=0> prec_sess;
+}
+
+transformed parameters {
+  real<lower=0>  sigma_indiv;
+  real<lower=0>  sigma_sess;
+  sigma_indiv = sqrt(1/prec_indiv);
+  sigma_sess = sqrt(1/prec_sess);
+}
+
+model {
+  for (i in 1:N){
+    y[i] ~ bernoulli_logit( beta[1] + beta[2]*x1[i] +
+                beta[3]*x2[i] + beta[4]*x1[i]*x2[i] +
+                tau_indiv[indiv[i]] + 
+                tau_sess[sess[i]] );
+  }
+  tau_indiv ~ normal( 0, sigma_indiv );
+  tau_sess ~ normal( 0, sigma_sess );
+ 
+  beta ~ normal( 0, 100 ); 
+  prec_indiv ~ gamma(1, 1);
+  prec_sess ~ gamma(1, 1);
+}
+'
+```
+
+### Running the model in `R`
+First, we package the necessary data for use with `Stan`, in a list format:
+```{r, echo=TRUE, include=TRUE}
+dat <- list(N  = nrow(cooperation),
+            p  = 4,
+            y  = cooperation$decision..0.D.1.C.,
+            x1 = cooperation$fluid_dummy,
+            x2 = cooperation$round_num,
+            indiv = indivIndex, N_indiv = max(indivIndex),
+            sess = sessIndex, N_sess = max(sessIndex) )
+```
+
+Then, we can run the model in `R`.
+```{r, eval=TRUE, echo=TRUE, results='hide' }
+resStan <- stan( model_code=logit_model, data=dat,
+                   init=list(list(prec_indiv=1,prec_sess=1)),
+                   chains=1, iter=3500, warmup=500, thin=1)
+```
+
+Convergence of the MCMC algorithm can be monitored and inspected (note that the gray shaded areas represent the warmup or burnin period). 
+
+```{r, echo=TRUE}
+## Show traceplot
+traceplot(resStan, pars = c("beta","sigma_indiv","sigma_sess"), inc_warmup = TRUE)
+```
+
+
+#### Optional:  The `rstanarm` package
+Rather than specify the model code (or a `.stan` model file) ourselves, we could also make use of the `rstanarm` package which provides wrapper functions for `Stan` for a variety of common models, including logistic regression.
+
+```{r, eval=TRUE, echo=TRUE, results='hide'}
+cooperation$decision = cooperation$decision..0.D.1.C.
+glm.out = stan_glmer( decision ~ fluid_dummy + round_num + fluid_dummy*round_num +
+                        (1|playerid) + (1|sessionnum), 
+                data = cooperation,
+                family = binomial(link = "logit"), 
+                chains = 1, iter = 1000)
+```
+
+### Preliminary results
+
+We can easily extract posterior samples from the model and look at posterior means for the regression coefficients:
+```{r}
+list_of_draws <- extract(resStan)
+postMeans <- matrix( c(mean(list_of_draws$beta[,1]),
+    mean(list_of_draws$beta[,2]),
+    mean(list_of_draws$beta[,3]),
+    mean(list_of_draws$beta[,4])), 1, 4)
+colnames(postMeans) <-  c("intercept","fluid_dummy","round_num","fluid_dummy*round_num")
+round(postMeans,4)
+```
+
+Below, we plot our draws from the marginal posterior distributions for the model parameters.  Our posterior estimates (sample means) are indicated by the vertical red lines.  Because we are often interested in finding non-zero effects, dashed vertical blue lines are plotted at the origin.
+```{r, fig.height=6}
+par(mfrow=c(2,2))
+for (i in 1:4){
+  hist(list_of_draws$beta[,i],main=paste("beta[",i,"]",sep=""), xlab = " ",
+        xlim=range(c(0,list_of_draws$beta[,i])))
+  abline(v=mean(list_of_draws$beta[,i]),col="red",lwd=2)
+  abline(v=0,col="blue",lty=2)}
+```
+
+## Hypothesis Testing
+Recall that the authors are interested in testing the hypothesis of whether or not frequent user-updated social networks promote cooperation, relative to other conditions.  This can be directly tested by testing for a positive $\beta_4$ (posterior mean = `r round(mean(list_of_draws$beta[,4]),4)`.  In our Bayesian setting, this means that we are interested in the posterior probabilty that $\beta_4$ (given our model and the observed data) is greater than zero.  We can estimate this probability using the posterior samples from our model to calculate the proportion of draws from the posterior distribution, $p(\beta_4|y)$, that are greater than zero:
+
+```{r, echo=TRUE}
+sum(list_of_draws$beta[,4] > 0) / length(list_of_draws$beta[,4])
+```
+
+Thus, our model provides evidence in support of the authors' claim:  frequently user-updated social networks do promote cooperation, relative to the other conditions.
+
+## Model checking
+
+### Posterior predictive checking
+A reasonable way to consider whether the model fits the data (i.e., captures or addresses the important features of the observed data) is to consider whether simulations from the model "look like" the observed data.  In this Bayesian setting, we can simply examine draws from the posterior predictive distribution, which is obtained by feeding posterior draws for model parameters back into the model to simulate predicted outcomes.  In the following sections, we consider a variety of perspectives to address whether simulations from the model look like the observed data.  See @gelman_carlin_stern_etal_2014[Chapter Six] for further motivation and more details.
+
+##### Qualitative Checks
+
+If the model fits well, then replicated data generated under the model should look similar to the observed data.  We can check this by obtaining posterior predictions for the observed data.  We simply need to add the following few lines to our `Stan` model code:
+
+```{r,echo=TRUE,eval=FALSE}
+'generated quantities {
+  vector[N] y_tilde;
+  for (i in 1:N)
+    y_tilde[i] = bernoulli_logit_rng( beta[1] + beta[2]*x1[i] +
+                beta[3]*x2[i] + beta[4]*x1[i]*x2[i] +
+                tau_indiv[indiv[i]] + 
+                tau_sess[sess[i]] );
+}'
+```
+
+```{r}
+logit_postPred <- '
+data {
+  
+  // Dimensions
+  int<lower=1> N;        // Number of observations
+  int<lower=1> p;        // Number of parameters
+  int<lower=1> N_indiv;  // Number of individuals
+  int<lower=1> N_sess;   // Number of sessions
+
+  // Indices
+  int<lower=1,upper=N_indiv> indiv[N];
+  int<lower=1,upper=N_sess> sess[N];
+
+  // Outcome
+  int<lower=0,upper=1> y[N];
+
+  // Covariates
+  real  x1[N];
+  real  x2[N];
+}
+
+parameters {
+  real  beta[p];
+  real  tau_indiv[N_indiv];
+  real  tau_sess[N_sess];
+  real<lower=0> prec_indiv;
+  real<lower=0> prec_sess;
+}
+
+transformed parameters {
+  real<lower=0>  sigma_indiv;
+  real<lower=0>  sigma_sess;
+  sigma_indiv = sqrt(1/prec_indiv);
+  sigma_sess = sqrt(1/prec_sess);
+}
+
+model {
+  for (i in 1:N){
+    y[i] ~ bernoulli_logit( beta[1] + beta[2]*x1[i] +
+                beta[3]*x2[i] + beta[4]*x1[i]*x2[i] +
+                tau_indiv[indiv[i]] + 
+                tau_sess[sess[i]] );
+  }
+  tau_indiv ~ normal( 0, sigma_indiv );
+  tau_sess ~ normal( 0, sigma_sess );
+ 
+  beta ~ normal( 0, 100 ); 
+  prec_indiv ~ gamma(1, 1);
+  prec_sess ~ gamma(1, 1);
+}
+
+generated quantities {
+  vector[N] y_tilde;
+  for (i in 1:N)
+    y_tilde[i] = bernoulli_logit_rng( beta[1] + beta[2]*x1[i] +
+                beta[3]*x2[i] + beta[4]*x1[i]*x2[i] +
+                tau_indiv[indiv[i]] + 
+                tau_sess[sess[i]] );
+}
+'
+```
+
+Then, we can fit this model just as before:
+```{r, eval=TRUE, echo=TRUE, results='hide' }
+postPredStan <- stan( model_code=logit_postPred, data=dat,
+                   init=list(list(prec_indiv=1,prec_sess=1)),
+                   chains=1, iter=3500, warmup=500, thin=1)
+```
+and easily extract the results:
+```{r}
+y_rep <- extract(postPredStan)$y_tilde
+```
+which, by default, excludes the warm-up or burn-in samples and permutes the ordering of the remaining posterior samples.
+
+###### Direct Data Display
+
+Because we are concerned with individual-level behavior, to help visualize the data we first organize it into a matrix where each row corresponds to a unique player and each column represents a round of play (across all conditions, there are up to `r max(session_info$roundnum)` rounds).  The plot below displays this matrix as an image, so that we can examine the decision history, cooperate (colored bar) or defect (grey bar) for all ` r max(unique(cooperation$playerid))` players in each round.
+
+```{r,fig.height=7,fig.width=5}
+origDatMat <- matrix(NA,nrow=dat$N_indiv,ncol=max(session_info$roundnum))
+for (i in 1:nrow(origDatMat)){
+  tempdf <- cooperation[cooperation$playerid==playerIDs$id[i],]
+  origDatMat[i,1:nrow(tempdf)] <- tempdf$decision*as.integer(tempdf$condition[1])
+  playerIDs$condition[i] <- tempdf$condition[1]
+  playerIDs$sessMax[i] <- nrow(tempdf)
+}
+#par(mfrow=c(1,3))
+#image(origDatMat[order(-rowSums(origDatMat,na.rm=TRUE)),],
+#      col=c("grey","blue","green","purple","red"))
+#image(origDatMat[order(-rowSums(origDatMat,na.rm=TRUE),
+#                       nrow(origDatMat) - unlist(lapply(1:nrow(origDatMat), function(i){
+#                         sum(is.na(origDatMat[i,]))
+#                       })) ),],
+#      col = c("grey","blue","green","purple","red"))
+
+### We'll use ggplot instead...
+# par(mfrow=c(1,1),mar=c(5,4,4,2)+.1)
+# image(t(origDatMat[order(playerIDs$condition, 
+#                       playerIDs$sessMax,
+#                       rowSums(origDatMat,na.rm=TRUE)),]),
+#       col=c("grey","blue","green","purple","red"),
+#       xlab="Round", xaxt="n",
+#       ylab="Individual",yaxt="n")
+# axis(2,at=c(1,100,200,nrow(playerIDs)/2,nrow(playerIDs))/nrow(playerIDs),
+#       labels=c(1,100,200,'...',nrow(playerIDs)),cex.axis=.8)
+# axis(1,at=seq(-.05,1.05,length=max(session_info$roundnum)+1),
+#      labels=c('',1:max(session_info$roundnum)),cex.axis=.8)
+
+ggDatMat <- as.data.frame(origDatMat)
+names(ggDatMat) <- paste("round",seq(1:max(session_info$roundnum)))
+ggDatMat$stayRnds <- sapply(1:nrow(ggDatMat),
+                            function(i){ sum(!is.na(ggDatMat[i,])) })
+ggDatMat$id <- as.factor(playerIDs$id)
+ggDatMat$condition <- playerIDs$condition
+ggDatMat$avgCoop <- rowMeans(ggDatMat[,paste("round",
+                        seq(1:max(session_info$roundnum)))],
+                        na.rm=TRUE)
+
+ggDatMelt <- melt(ggDatMat[,c("id", paste("round",
+              seq(1:max(session_info$roundnum))))],
+              id.vars="id")
+ggDatMelt <- merge(ggDatMelt, ggDatMat[,c("id","condition","stayRnds","avgCoop")],
+                   by="id")
+ggDatMelt$id <- factor( ggDatMelt$id, levels=unique(ggDatMelt$id[
+                    order(ggDatMelt$condition,ggDatMelt$stayRnds)]))
+
+ggplot(ggDatMelt,aes(x=variable,id)) +
+  geom_raster(aes(fill=as.factor(value))) +
+  theme(axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  scale_fill_manual(values=c("light grey","red","green","cyan","purple"),
+        name="Cooperate?",labels=c("Defect",
+        "Fixed","Random","Viscous","Fluid"))
+
+## each plot is an individual player
+##  ... way too much
+#ggplot(cooperation,aes(round_num,decision)) +
+#  geom_line() + geom_point() +
+#  facet_trelliscope(~playerid,self_contained=TRUE)
+```
+
+Now we can compare this plot for the original (true) data to realizations from the posterior distribution from our model:
+```{r, fig.height=5}
+y_rep <- extract(postPredStan)$y_tilde
+
+# par(mfrow=c(3,3),mar=c(0,0,0,0)+.1)
+# image(t(origDatMat[order(playerIDs$condition, 
+#                       playerIDs$sessMax,
+#                       rowSums(origDatMat,na.rm=TRUE)),]),
+#       col=c("grey","blue","green","purple","red"),
+#       xlab="",xaxt="n",ylab="",yaxt="n")
+# 
+# postDatMats <- list()
+# n.postDatMats <- 8
+# 
+# for (j in 1:n.postDatMats){
+#   repDatMat <- matrix(NA,nrow(origDatMat),ncol(origDatMat))
+#   for (i in 1:nrow(repDatMat)){
+#     tempvec <- y_rep[j,which(cooperation$playerid==playerIDs$id[i])] *
+#                   playerIDs$condition[i]
+#     repDatMat[i,1:length(tempvec)] <- tempvec
+#   }
+#   postDatMats[[j]] <- repDatMat
+#   image(t(repDatMat[order(playerIDs$condition, 
+#                       playerIDs$sessMax,
+#                       rowSums(origDatMat,na.rm=TRUE)),]),
+#       col=c("grey","blue","green","purple","red"),
+#       xlab="",xaxt="n",ylab="",yaxt="n")
+# }
+
+
+bigPostMat <- ggDatMelt
+bigPostMat$samp <- 0
+
+n.postDatMats <- 8
+
+for (j in 1:n.postDatMats){
+  repDatMat <- matrix(NA,nrow(origDatMat),ncol(origDatMat))
+  for (i in 1:nrow(repDatMat)){
+    tempvec <- y_rep[j,which(cooperation$playerid==playerIDs$id[i])] *
+                  playerIDs$condition[i]
+    repDatMat[i,1:length(tempvec)] <- tempvec
+  }
+  ggRepDatMat <- as.data.frame(repDatMat)
+  names(ggRepDatMat) <- paste("round",seq(1:max(session_info$roundnum)))
+  ggRepDatMat$stayRnds <- sapply(1:nrow(ggRepDatMat),
+                            function(i){ sum(!is.na(ggRepDatMat[i,])) })
+  ggRepDatMat$id <- as.factor(playerIDs$id)
+  ggRepDatMat$condition <- playerIDs$condition
+  ggRepDatMat$avgCoop <- rowMeans(ggRepDatMat[,paste("round",
+                        seq(1:max(session_info$roundnum)))],
+                        na.rm=TRUE)
+  ggRepDatMelt <- melt(ggRepDatMat[,c("id", paste("round",
+              seq(1:max(session_info$roundnum))))],
+              id.vars="id")
+  ggRepDatMelt <- merge(ggRepDatMelt, ggRepDatMat[,c("id","condition","stayRnds","avgCoop")],
+                   by="id")
+  
+  ggRepDatMelt$samp <- j
+  bigPostMat <- rbind(bigPostMat,ggRepDatMelt)
+}
+
+bigPostMat$id <- factor( bigPostMat$id, levels=unique(bigPostMat$id[
+                    order(bigPostMat$samp,
+                          bigPostMat$condition,bigPostMat$stayRnds)]))
+
+ggplot(bigPostMat,aes(x=variable,id)) +
+  geom_raster(aes(fill=as.factor(value))) +
+  theme(axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+  scale_fill_manual(values=c("light grey","red","green","cyan","purple"),
+        name="Cooperate?",labels=c("Defect",
+        "Fixed","Random","Viscous","Fluid")) +
+  facet_trelliscope(~samp,self_contained=TRUE)
+
+```
+
+In this case, there doesn't appear to be any obvious differences between the true data and our posterior predictions.
+
+###### Summary Statistics or Inferences
+In this setting, the large number of individual participants can make it difficult to spot differences in the data.  Instead, we can use summary measures or trends to compare our posterior predictions to the original data.
+
+Below, we **average individual behavior by round** (recall from the plots above that later rounds typically have far fewer participants) and plot the the average cooperation level by round:
+
+```{r}
+data.meanAll=
+  cooperation%>%
+  group_by(condition, 
+           round_num)%>%
+  summarise(
+    mean_decision=mean(decision),
+    fluid_dummy=mean(fluid_dummy)
+  )
+
+predicted.meanAll=NULL
+for(i in 1:nrow(y_rep)){
+  tmp=cooperation
+  tmp$predicted=y_rep[i,]
+  tmp.mean=
+    tmp%>%
+    group_by(condition, round_num)%>%
+    summarise(
+      mean_decision=mean(predicted)
+    )
+  tmp.mean$rep=rep(i, nrow(tmp.mean))
+  predicted.meanAll=rbind(predicted.meanAll, tmp.mean)
+}
+
+alpha <- .05
+predicted.meanSum=
+  predicted.meanAll%>%
+  group_by(round_num,
+           condition)%>%
+  summarise(
+    low_bnd=quantile(mean_decision,alpha/2),
+    med_bnd=quantile(mean_decision,.5),
+    high_bnd=quantile(mean_decision,1-alpha/2)
+  )
+```
+
+```{r, fig.height=3}
+#ggplot(predicted.meanAll, aes(x=factor(round_num), 
+#                           y=mean_decision,
+#                           fill=condition))+
+#        geom_boxplot()+
+#        facet_grid(.~factor(condition))+
+#        labs(x="round")+
+#        theme(axis.text.x=element_text(angle=0, vjust=0.4,hjust=1))
+
+conds <- levels(predicted.meanAll$condition)
+par(mfrow=c(1,length(conds)))
+for (i in 1:length(conds)){
+  boxplot(mean_decision ~ round_num,
+        data=predicted.meanAll[predicted.meanAll$condition == conds[i], ], 
+        main = conds[i], pch = NA, ylim=c(0,1), xlab = "Round", 
+        ylab = "Average Cooperation Level")
+  with(data.meanAll[data.meanAll$condition==conds[i], ],
+    points(round_num, mean_decision,
+            pch = 20, col = "red"))
+}
+```
+
+```{r, fig.height=6}
+ggplot() + 
+  geom_ribbon(data=predicted.meanSum,alpha=.25, 
+              aes(x=round_num,ymin=low_bnd,ymax=high_bnd,
+                  fill=condition)) + 
+  geom_line(data=data.meanAll,
+              aes(x=round_num,y=mean_decision,col=condition)) +
+  geom_point(data=data.meanAll,size=2,
+             aes(x=round_num,y=mean_decision,col=condition)) +
+  geom_line(data=predicted.meanSum,linetype=2,
+            aes(x=round_num,y=med_bnd,col=condition))
+```
+Recall that we are not modeling each session type individually, but have only included an indicator for fluid vs. non-fluid sessions in our model.  Observed variation across predictions for non-fluid sessions is a result of the estimated session-level random effects.
+
+
+Since our focus is on the performance of the fluid network setting relative to *all other settings*, we can consider collapsing all non-fluid rounds together in order to make the comparison clearer:
+
+```{r}
+data.mean=
+  cooperation%>%
+  group_by(fluid_dummy, 
+           round_num)%>%
+  summarise(
+    mean_decision=mean(decision)
+  )
+
+predicted.mean=NULL
+for(i in 1:nrow(y_rep)){
+  tmp=cooperation
+  tmp$predicted=y_rep[i,]
+  tmp.mean=
+    tmp%>%
+    group_by(fluid_dummy, round_num)%>%
+    summarise(
+      mean_decision=mean(predicted)
+    )
+  tmp.mean$rep=rep(i, nrow(tmp.mean))
+  predicted.mean=rbind(predicted.mean, tmp.mean)
+}
+
+predicted.meanSum2=
+  predicted.mean%>%
+  group_by(round_num,
+           fluid_dummy)%>%
+  summarise(
+    low_bnd=quantile(mean_decision,alpha/2),
+    med_bnd=quantile(mean_decision,.5),
+    high_bnd=quantile(mean_decision,1-alpha/2)
+  )
+
+```
+
+```{r, fig.height=4}
+
+
+#ggplot(predicted.mean, aes(x=factor(round_num), 
+#                           y=mean_decision,
+#                           fill=fluid_dummy))+
+#        geom_boxplot()+
+#        facet_grid(.~factor(fluid_dummy))+
+#        labs(x="round")+
+#        theme(axis.text.x=element_text(angle=0, vjust=0.4,hjust=1))
+
+par(mfrow=c(1,2))
+boxplot(mean_decision ~ round_num,
+        data=predicted.mean[predicted.mean$fluid_dummy == 1, ], 
+        main = "Fluid = 1", pch = NA, ylim=c(0,1),
+        xlab = "Round", 
+        ylab = "Average Cooperation Level")
+with(data.mean[data.mean$fluid_dummy==1, ],
+    points(round_num, mean_decision,
+            pch = 16, col = "red"))
+
+boxplot(mean_decision~round_num,
+        data=predicted.mean[predicted.mean$fluid_dummy == 0, ], 
+        main = "Fluid = 0", pch = NA, ylim=c(0,1),
+        xlab = "Round", 
+        ylab = "Average Cooperation Level")
+with(data.mean[data.mean$fluid_dummy==0, ],
+     points(round_num, mean_decision,
+            pch = 16, col = "red"))
+```
+
+```{r, fig.height=6}
+ggplot() + 
+  geom_ribbon(data=predicted.meanSum2,alpha=.25, 
+              aes(x=round_num,ymin=low_bnd,ymax=high_bnd,
+                  fill=as.factor(fluid_dummy))) + 
+  geom_line(data=data.meanAll[data.meanAll$fluid_dummy==1,],
+              aes(x=round_num,y=mean_decision,col=as.factor(fluid_dummy))) +
+  geom_point(data=data.meanAll,size=2,
+             aes(x=round_num,y=mean_decision,col=as.factor(fluid_dummy))) +
+  geom_line(data=predicted.meanSum2,linetype=2,
+            aes(x=round_num,y=med_bnd,col=as.factor(fluid_dummy)))
+```
+
+We can also consider players' tendency to switch between cooperating or defecting in the posterior samples (recall that we looked at these proportions in our exploratory analysis), by **averaging over all rounds and players**. 
+
+```{r, fig.height=6}
+
+allActions <- as.data.frame(
+                  cbind(action.info,
+                  "rep"=rep(0,4),
+                  "type"=c("C -> C","D -> D",
+                      "C -> D", "D -> C")))
+names(allActions)[1:2] <- c("simD","prevSimD")
+
+n.postDatMats <- 8
+
+for (j in 1:n.postDatMats){
+  oneRep <- cooperation[,c("sessionnum","condition","playerid",
+                             "round_num","decision")]
+  oneRep$simD <- y_rep[j,]
+
+  ## reconstruct previous decision variable for posterior draw
+  oneRep$prevSimD <- NA
+  for (i in 1:nrow(oneRep)){ if (oneRep$round_num[i] > 1){
+    oneRep$prevSimD[i] <- oneRep$simD[ oneRep$playerid == oneRep$playerid[i] &
+                                      oneRep$round_num == (oneRep$round_num[i] - 1)] }}
+
+  action.infoSim=
+    oneRep%>%
+    group_by(prevSimD, 
+           simD)%>%
+    summarise(
+      count=n()
+    )
+
+  # reorder the rows
+  action.infoSim=action.infoSim[c(4,1,3,2), ]
+  allActions <- rbind(allActions, as.data.frame(
+                  cbind(action.infoSim,
+                  "rep"=rep(j,4),
+                  "type"=c("C -> C","D -> D",
+                      "C -> D", "D -> C"))) )
+}
+
+ggplot( allActions, aes(type,count) ) + 
+  geom_bar(stat="identity") +
+  facet_wrap(~rep) +
+  scale_x_discrete(limits=c("C -> C","D -> D",
+                      "C -> D", "D -> C"))
+```
+
+Again, we the truth (top left plot) is hard to distinguish among posterior samples.
+
+Another perspective could **consider game sessions individually**.
+
+```{r}
+  data.mean=
+    cooperation%>%
+    filter(fluid_dummy==1)%>%
+    group_by(sessionnum, round_num)%>%
+    summarise(
+      mean_decision=mean(decision)
+    )
+
+  predicted.mean=NULL
+  for(i in 1:nrow(y_rep)){
+    tmp=cooperation
+    tmp$predicted=y_rep[i,]
+    tmp.mean=
+      tmp%>%
+      filter(fluid_dummy==1)%>%
+      group_by(sessionnum, round_num)%>%
+      summarise(
+        mean_decision=mean(predicted)
+      )
+    tmp.mean$rep=rep(i, nrow(tmp.mean))
+    predicted.mean=rbind(predicted.mean, tmp.mean)
+  }
+
+```
+
+```{r, fig.height=6}
+  # ggplot(predicted.mean, aes(x=factor(round_num), 
+  #                          y=mean_decision,
+  #                          fill=sessionnum))+
+  #       geom_boxplot()+
+  #       facet_wrap(~sessionnum, ncol=4)
+  #       labs(x="round")+
+  #       theme(axis.text.x=element_text(angle=0, vjust=0.5,hjust=1))
+
+  par(mfrow=c(3,4))
+  for(i in unique(predicted.mean$sessionnum)){
+    boxplot(mean_decision~round_num,
+          data=predicted.mean[predicted.mean$sessionnum == i, ], 
+          main = paste("session", i), pch = NA,
+          xlab = "round", 
+          ylab = "Proportion of cooperation")
+    with(data.mean[data.mean$sessionnum == i, ],
+       points(round_num, mean_decision,
+              pch = 16, col = "red"))
+  }
+```
+
+##### Formal test quantities
+
+Had we seen any inconsistencies between our posterior predictions and the observed data, we could consider developing formal test quantities to further examine these differences.  For example, say that we had noticed a difference in the proportion of times individuals move from cooperation to defection across rounds (i.e. differences in the height of the C --> D bars across the above barplot.  We could use the observed proportion in each draw or sample from the posterior predictive distribution to test whether or not there is any systematic difference between our posterior predictions and the observed data, in this respect.  Of course, other tet quantities could certainly be developed.  For more discussion, see @gelman_carlin_stern_etal_2014[Chapter Six].
+
+## Uncertainty Evaluation and Prediction
+
+In this section, we use bootstrapped data sets (resampling, with replacement, rows (individual-round outcomes) from the original data set) to evaluate model fit.
+
+### Treating all observations independently
+Here, we simply treat each row as an individual data point, an outcome (cooperate or defect) for a particular individual in a particular round.
+```{r, eval=TRUE, echo=TRUE, results='hide' }
+if (runModels){ 
+  logit.bootstrap <- function(data, indices) {
+    d <- data[indices, ]
+    fit.glm <- glm(decision..0.D.1.C.~ fluid_dummy*round_num, data = d, family = "binomial")
+    return(coef(fit.glm))
+  }
+
+  logit.boot <- boot(data=cooperation, statistic=logit.bootstrap, R=30) # R: number of samples
+
+
+  fileName <- "./lib/logit.stan"
+  stan_code <- readChar(fileName, 
+                      file.info(fileName)$size)
+  cat(stan_code)
+
+  logit.stan.bootstrap <- function(data , indices){
+    d <- data[indices,]
+    dat <- list(N        = nrow(d),
+            p        = 4,
+            decision    = d$decision..0.D.1.C.,
+            fluid_dummy = d$fluid_dummy,
+            round_num      = d$round_num)
+    fit.stan.logit <- stan(model_code = stan_code, data = dat,
+                chains = 3, iter = 3000, warmup = 500, thin = 10)
+    list_of_draws.bootstrap <- extract(fit.stan.logit)
+    return(list_of_draws.bootstrap$beta[dim(list_of_draws.bootstrap$beta)[2],])
+  }
+
+  logit.stan.boot <- boot(data=cooperation, statistic=logit.stan.bootstrap, R=3) # R: number of samples
+
+}
+```
+
+### Accounting for sessions
+
+However, sampling each row of the data set completing independently ignores the fact the players are grouped into sessions, with players able to interact only with other players in his/her assigned session. 
+
+In this section, we resample sessions (each session consists of a group of rows, i.e. a collection of individual-round outcomes).
+
+First, specify the number of bootstrapped sets:
+```{r, echo=TRUE}
+num.boot.sets = 2
+```
+
+Then, we can construct the bootstrapped data set:
+```{r, eval=TRUE, echo=TRUE, results='hide' }
+if (runModels){ 
+  samp = matrix(nrow=num.boot.sets,ncol=length(unique(cooperation$sessionnum)))
+  logit.bootstrap.session = matrix(nrow=num.boot.sets,ncol=4)
+  bootstrap.session.beta = array(rep(0,num.boot.sets*4*750),c(750,4,num.boot.sets))
+
+  for (i in 1:num.boot.sets){
+    samp[i,] <- sample(unique(cooperation$sessionnum),40, replace=TRUE)
+    tmp.assign <- do.call(rbind, lapply(samp[i,], function(x)
+      cooperation[cooperation$sessionnum == x,]))
+    logit.bootstrap.session.tmp <- glm(decision..0.D.1.C.~ fluid_dummy*round_num,
+      data = tmp.assign,family = "binomial")
+    logit.bootstrap.session[i,] = logit.bootstrap.session.tmp$coefficients
+ 
+    dat.bootstrap.session.tmp <- list(N        = nrow(tmp.assign),
+                                  p        = 4,
+                                  decision    = tmp.assign$decision..0.D.1.C.,
+                                  fluid_dummy = tmp.assign$fluid_dummy,
+                                  round_num      = tmp.assign$round_num)
+   fileName <- "./lib/logit.stan"
+   stan_code <- readChar(fileName, 
+                      file.info(fileName)$size)
+   cat(stan_code)
+   resStan.bootstrap.session.tmp <- stan(model_code = stan_code, data = dat.bootstrap.session.tmp,
+                chains = 3, iter = 3000, warmup = 500, thin = 10)
+
+   list_of_draws.bootstrap.session.tmp <- extract(resStan.bootstrap.session.tmp)
+   bootstrap.session.beta[,,i] <- list_of_draws.bootstrap.session.tmp$beta
+  }
+}
+```
+
+### Summary
+This table shows the summary of results for bootstrapping.
+```{r}
+if (runModels){ 
+  mytable <- rbind( #logit$coefficients,
+                 logit.bootstrap.session,
+                 list_of_draws$beta[dim(list_of_draws$beta)[2],],
+                 t(bootstrap.session.beta[dim(bootstrap.session.beta)[1],,]))
+  rownames(mytable) <- c(#"logit",
+    "logit_boot_1","logit_boot_2","Bayes_logit","Bayes_logit_boot_1","Bayes_logit_boot_2") # for 2 bootstraps
+  datatable(mytable, 
+          caption = "coefficients for linear regression using different methods and bootstrapping",
+          options = list(
+              scrollX = TRUE,
+              scrollCollapse = TRUE))
+}
+```
+
+
+Posterior distribution draws are as follow:
+
+```{r, fig.height=2}
+if (runModels){ for (j in 1:4){
+  par(mfrow=c(1,3))
+  plot(density(list_of_draws$beta[,j]),xlab = " ", ylab=" ",main="orig_bayes")
+  for (i in 1:num.boot.sets){
+  plot(density(bootstrap.session.beta[,j,i]),xlab = " ", ylab=" ",main=paste0("boot",i))
+  }
+}}
+```
+
+
+### Comparing KL-divergence
+```{r}
+if (runModels){ 
+  KL.divergence <- array(rep(0,(1+num.boot.sets)*(1+num.boot.sets)*4),
+                         c((1+num.boot.sets),(1+num.boot.sets),4))
+  for (j in 1:4){
+    for (i in 1:(1+num.boot.sets)){
+      for (q in 1:(1+num.boot.sets)){
+        if (i==1){
+            if(q==1)
+            KL.divergence[i,q,j] <- KLD(list_of_draws$beta[1:dim(bootstrap.session.beta)[1],j],
+                                        list_of_draws$beta[1:dim(bootstrap.session.beta)[1],j])$sum.KLD.px.py
+      
+          else{
+            KL.divergence[i,q,j] <- KLD(list_of_draws$beta[1:dim(bootstrap.session.beta)[1],j],
+                                        bootstrap.session.beta[,j,(q-1)])$sum.KLD.px.py
+          }
+        }
+        else{
+          if(q==1){
+            KL.divergence[i,q,j] <- KLD(bootstrap.session.beta[,j,(i-1)],
+                                        list_of_draws$beta[1:dim(bootstrap.session.beta)[1],j])$sum.KLD.px.py
+          }
+          else{
+            KL.divergence[i,q,j] <- KLD(bootstrap.session.beta[,j,(i-1)],
+                                      bootstrap.session.beta[,j,(q-1)])$sum.KLD.px.py
+          }
+        }
+      }
+    }
+  }
+
+  row.names(KL.divergence) <- c("orig_bayes","boot1","boot2")
+  colnames(KL.divergence) <- c("orig_bayes","boot1","boot2")
+  KL.divergence
+}
+```
+
+# Why bother?
+
+### Reproducible research
+The degree of reproducibility of scientists' results and findings has increasingly become an important area of interest.  In part this is due to the "replication crisis" (for more discussion, see some of the posts on Andrew Gelman's blog - [here](http://andrewgelman.com/2016/09/21/what-has-happened-down-here-is-the-winds-have-changed/) and [here](http://andrewgelman.com/2016/09/22/why-is-the-scientific-replication-crisis-centered-on-psychology/)) and, generally speaking, the idea of reproducible research is hard to argue against.  However, what exactly fully reproducible research looks like *in practice* is still up for debate.  In the analysis presented here, we have tried to take steps in this direction by
+
+* making code, data, plots, and results available 
+* documenting the complete workflow (from research hypotheses, to data collection and cleaning, all the way through to modeling and the consideration of model fit)
+* integrating code within the analysis narrative (in an accessible and interactive way, when possible)
+* increasing transparency (by briefly describing the motivation for each step in our particular data analysis path)
+* describing software requirements.
+
+@stodden_mcnutt_bailey_etal_2016 ([available here](http://science.sciencemag.org/content/354/6317/1240)) provide a good discussion of some characteristics of an (ideal) reproducible analysis, including some of those we have tried to incorporate here.  
+
+### Bayesian modeling with `Stan`
+Like other probabilistic programming languages, `Stan` provides built-in computational tools to do inference (e.g. parameter estimation, hypothesis testing) for Bayesian models, which in most cases would otherwise require much more work (i.e. if we had to code the samplers and algorithms by hand).  In addition to `R` (used here), `Stan` is capable of interfacing with a variety of data analysis languages, such as Python, shell, MATLAB, Julia, and Stata, which helps to make `Stan` even more accesible.  Additionally, `Stan` models utilize highly efficient sampling algorithms and, in `R`, can be further investigated with very useful helper packages, such as [shinyStan](http://mc-stan.org/users/interfaces/shinystan.html) which provides easy access to visual and numerical summaries of model features and diagnostics and [rstanarm](https://cran.r-project.org/web/packages/rstanarm/index.html) which provides wrapper functions for many common pre-built Bayesian models.
+
+For more discussion of Bayesian methods for data analysis and best practices in the field, we recommend @gelman_carlin_stern_etal_2014.
+
+# Some references
+
