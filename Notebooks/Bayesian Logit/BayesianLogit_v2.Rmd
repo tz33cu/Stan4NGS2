@@ -72,7 +72,9 @@ download.file("http://davidrand-cooperation.com/s/Rand2011PNAS_data_and_code-pi6
               temp, mode="wb")
 cooperation <- read.table(unz(temp,"Rand2011PNAS_cooperation_data.txt"),
                           sep="\t",skip=0,header=T)
+unlink(temp)
 #cooperation <- read.table("data/Rand2011PNAS_cooperation_data.txt", sep="\t",skip=0, header=T)
+
 names(cooperation)
 datatable(sample_n(cooperation, 50), 
           caption = "Randomly selected rows of data.",
