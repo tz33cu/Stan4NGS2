@@ -67,12 +67,12 @@ library("LaplacesDemon")
 In the *notebook* mode, we are able to process data from a URL link. This greatly improves reproducibility. 
 
 ```{r load-data}
-#temp <- tempfile()
-#download.file("http://davidrand-cooperation.com/s/Rand2011PNAS_data_and_code-pi6b.zip",
-#              "data/Rand2011PNAS_data_and_code-pi6b.zip", 
-#              mode="wb")
-#unzip("Rand2011PNAS_data_and_code-pi6b.zip")
-cooperation <- read.table("data/Rand2011PNAS_cooperation_data.txt", sep="\t",skip=0, header=T)
+temp <- tempfile()
+download.file("http://davidrand-cooperation.com/s/Rand2011PNAS_data_and_code-pi6b.zip",
+              temp, mode="wb")
+cooperation <- read.table(unz(temp,"Rand2011PNAS_cooperation_data.txt"),
+                          sep="\t",skip=0,header=T)
+#cooperation <- read.table("data/Rand2011PNAS_cooperation_data.txt", sep="\t",skip=0, header=T)
 names(cooperation)
 datatable(sample_n(cooperation, 50), 
           caption = "Randomly selected rows of data.",
